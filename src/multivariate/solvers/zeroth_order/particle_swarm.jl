@@ -1,6 +1,10 @@
-struct ParticleSwarm{Tl, Tu} <: ZerothOrderOptimizer
-    lower::Tl
-    upper::Tu
+using Base.Threads
+
+struct ParticleSwarm{T} <: ZerothOrderOptimizer
+    lower::Vector{T}
+    lower_ini::Vector{T}
+    upper::Vector{T}
+    upper_ini::Vector{T}
     n_particles::Int
 end
 
@@ -14,7 +18,7 @@ ParticleSwarm(; lower = [],
 ```
 
 The constructor takes 3 keywords:
-* `lower = []`, a vector of lower bounds, unbounded below if empty or `-Inf`'s
+* `lower = []`, a vector of lower bounds, unbounded below if empty or `Inf`'s
 * `upper = []`, a vector of upper bounds, unbounded above if empty or `Inf`'s
 * `n_particles = 0`, the number of particles in the swarm, defaults to least three
 
@@ -22,7 +26,7 @@ The constructor takes 3 keywords:
 The Particle Swarm implementation in Optim.jl is the so-called Adaptive Particle
 Swarm algorithm in [1]. It attempts to improve global coverage and convergence by
 switching between four evolutionary states: exploration, exploitation, convergence,
-and jumping out. In the jumping out state it intentionally tries to take the best
+and jumping out. In the jumping out state it intentially tries to take the best
 particle and move it away from its (potentially and probably) local optimum, to
 improve the ability to find a global optimum. Of course, this comes a the cost
 of slower convergence, but hopefully converges to the global optimum as a result.
@@ -33,7 +37,7 @@ reaches the maximum number of iterations set in Optim.Options(iterations=x)`.
 ## References
 - [1] Zhan, Zhang, and Chung. Adaptive particle swarm optimization, IEEE Transactions on Systems, Man, and Cybernetics, Part B: CyberneticsVolume 39, Issue 6 (2009): 1362-1381
 """
-ParticleSwarm(; lower = [], upper = [], n_particles = 0) = ParticleSwarm(lower, upper, n_particles)
+ParticleSwarm(; lower = [], lower_ini = [], upper = [], upper_ini = [], n_particles = 0) = ParticleSwarm(lower, lower_ini, upper, upper_ini, n_particles)
 
 Base.summary(::ParticleSwarm) = "Particle Swarm"
 
@@ -73,27 +77,25 @@ function initial_state(method::ParticleSwarm, options, d, initial_x::AbstractArr
     where one randomly chosen parameter is modified. This helps
     the swarm jumping out of local minima.
     =#
-
     n = length(initial_x)
-    if isempty(method.lower)
-        limit_search_space = false
+    # TODO do we even need a lower((n) upper    ) that is different from method.lower(upper)
+    # do some checks on input parameters
+    @assert length(method.lower) == length(method.upper) "lower and upper must be of same length."
+    if length(method.lower) > 0
+        lower = copyto!(similar(initial_x), copy(method.lower))
+        upper = copyto!(similar(initial_x), copy(method.upper))
+        lower_ini = copyto!(similar(initial_x), copy(method.lower_ini))
+        upper_ini = copyto!(similar(initial_x), copy(method.upper_ini))
+        limit_search_space = true
+        @assert length(lower) == length(initial_x) "limits must be of same length as x_initial."
+        @assert all(upper .> lower) "upper must be greater than lower"
+    else
         lower = copy(initial_x)
-        lower .= -Inf
-    else
-        lower = method.lower
-        limit_search_space = true
-    end
-    if isempty(method.upper)
         upper = copy(initial_x)
-        upper .= Inf
-        # limit_search_space is whatever it was for lower
-    else
-        upper = method.upper
-        limit_search_space = true
+        lower_ini = copy(initial_x)
+        upper_ini = copy(initial_x)
+        limit_search_space = false
     end
-
-    @assert length(lower) == length(initial_x) "limits must be of same length as x_initial."
-    @assert all(upper .> lower) "upper must be greater than lower"
 
     if method.n_particles > 0
         if method.n_particles < 3
@@ -129,8 +131,8 @@ function initial_state(method::ParticleSwarm, options, d, initial_x::AbstractArr
     if limit_search_space
         for i in 1:n_particles
             for j in 1:n
-                ww = upper[j] - lower[j]
-                X[j, i] = lower[j] + ww * rand(T)
+                ww = upper_ini[j] - lower_ini[j]
+                X[j, i] = lower_ini[j] + ww * rand(T)
                 X_best[j, i] = X[j, i]
                 V[j, i] = ww * (rand(T) * T(2) - T(1)) / 10
             end
@@ -157,7 +159,7 @@ function initial_state(method::ParticleSwarm, options, d, initial_x::AbstractArr
         X_best[j, 1] = initial_x[j]
     end
 
-    for i in 2:n_particles
+    Threads.@threads for i in 2:n_particles
         score[i] = value(d, X[:, i])
     end
 
@@ -460,7 +462,7 @@ end
 
 function limit_X!(X, lower, upper, n_particles, n)
     # limit X values to boundaries
-    for i in 1:n_particles
+    Threads.@threads for i in 1:n_particles
         for j in 1:n
             if X[j, i] < lower[j]
               	X[j, i] = lower[j]
@@ -477,7 +479,8 @@ function compute_cost!(f,
                        X::Matrix,
                        score::Vector)
 
-    for i in 1:n_particles
+    
+    Threads.@threads for i in 1:n_particles
         score[i] = value(f, X[:, i])
     end
     nothing
